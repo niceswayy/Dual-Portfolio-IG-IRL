@@ -9,6 +9,8 @@ import {
   Plug,
   Zap,
   FolderKanban,
+  Workflow,
+  Shield,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -20,6 +22,8 @@ const nav = [
   { href: "/mcp", icon: Plug, label: "MCP Servers" },
   { href: "/skills", icon: Zap, label: "Skill Builder" },
   { href: "/projects", icon: FolderKanban, label: "Projects" },
+  { href: "/automations", icon: Workflow, label: "Automations" },
+  { href: "/audit", icon: Shield, label: "Audit Center" },
 ];
 
 export default function Sidebar() {

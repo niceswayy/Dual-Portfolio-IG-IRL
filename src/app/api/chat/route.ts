@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { chatRequestSchema, validateRequest } from "@/lib/validation";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o";
@@ -6,54 +7,79 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, systemPrompt, model, history } = await req.json();
+    const body = await req.json();
+    const validation = validateRequest(chatRequestSchema, body);
+
+    if (!validation.success) {
+      return Response.json({ error: validation.error }, { status: 400 });
+    }
+
+    const { message, systemPrompt, model, history } = validation.data;
 
     if (!OPENAI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "OPENAI_API_KEY not configured" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+      return Response.json(
+        { error: "API key not configured. Set OPENAI_API_KEY in your .env file." },
+        { status: 500 }
       );
     }
 
     const messages = [
-      { role: "system" as const, content: systemPrompt || "You are a helpful AI assistant." },
-      ...(history || []),
+      { role: "system" as const, content: systemPrompt },
+      ...history,
       { role: "user" as const, content: message },
     ];
 
-    const res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: model || OPENAI_MODEL,
-        messages,
-        stream: true,
-        temperature: 0.7,
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+
+    let res: Response;
+    try {
+      res = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: model || OPENAI_MODEL,
+          messages,
+          stream: true,
+          temperature: 0.7,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      const msg = err instanceof Error && err.name === "AbortError"
+        ? "Request timed out after 30 seconds"
+        : "Failed to reach AI service";
+      return Response.json({ error: msg }, { status: 504 });
+    }
+
+    clearTimeout(timeout);
 
     if (!res.ok) {
-      const err = await res.text();
-      return new Response(
-        JSON.stringify({ error: `OpenAI error: ${res.status} - ${err}` }),
-        { status: res.status, headers: { "Content-Type": "application/json" } }
+      // Sanitize — don't leak raw API error details
+      const status = res.status;
+      const genericErrors: Record<number, string> = {
+        401: "Invalid API credentials",
+        429: "Rate limit exceeded on AI service",
+        500: "AI service internal error",
+        503: "AI service temporarily unavailable",
+      };
+      return Response.json(
+        { error: genericErrors[status] || `AI service error (${status})` },
+        { status: Math.min(status, 503) }
       );
     }
 
-    // Transform OpenAI SSE stream to our format
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
     const stream = new ReadableStream({
-      async start(controller) {
+      async start(ctrl) {
         const reader = res.body?.getReader();
-        if (!reader) {
-          controller.close();
-          return;
-        }
+        if (!reader) { ctrl.close(); return; }
 
         let buffer = "";
         let totalTokens = 0;
@@ -72,9 +98,7 @@ export async function POST(req: NextRequest) {
               if (!trimmed || !trimmed.startsWith("data: ")) continue;
               const data = trimmed.slice(6);
               if (data === "[DONE]") {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({ done: true, tokens: totalTokens })}\n\n`)
-                );
+                ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, tokens: totalTokens })}\n\n`));
                 continue;
               }
 
@@ -82,18 +106,16 @@ export async function POST(req: NextRequest) {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content;
                 if (content) {
-                  totalTokens += 1; // approximate
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify({ content })}\n\n`)
-                  );
+                  totalTokens++;
+                  ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
                 }
               } catch {
-                // skip
+                // skip malformed chunks
               }
             }
           }
         } finally {
-          controller.close();
+          ctrl.close();
         }
       },
     });
@@ -105,10 +127,7 @@ export async function POST(req: NextRequest) {
         Connection: "keep-alive",
       },
     });
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+  } catch {
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }

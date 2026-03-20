@@ -41,6 +41,31 @@ body {
   background: var(--accent);
 }
 
+/* Toast slide-in */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+/* Gauge fill */
+@keyframes gauge-fill {
+  from {
+    stroke-dashoffset: 283;
+  }
+}
+.animate-gauge {
+  animation: gauge-fill 1.5s ease-out forwards;
+}
+
 /* Neural pulse animation */
 @keyframes pulse-glow {
   0%,

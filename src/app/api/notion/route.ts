@@ -1,19 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
+import { notionRequestSchema, validateRequest } from "@/lib/validation";
 
 const NOTION_API_KEY = process.env.NOTION_API_KEY || "";
 const NOTION_VERSION = "2022-06-28";
 const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID || "";
 
 async function notionFetch(endpoint: string, options: RequestInit = {}) {
-  return fetch(`https://api.notion.com/v1${endpoint}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${NOTION_API_KEY}`,
-      "Notion-Version": NOTION_VERSION,
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const res = await fetch(`https://api.notion.com/v1${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${NOTION_API_KEY}`,
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+    clearTimeout(timeout);
+    return res;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
 }
 
 export async function GET() {
@@ -31,71 +43,72 @@ export async function GET() {
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      return NextResponse.json({ error: err }, { status: res.status });
+      return NextResponse.json(
+        { error: "Failed to query Notion database" },
+        { status: res.status }
+      );
     }
 
     const data = await res.json();
     return NextResponse.json(data);
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 }
-    );
+  } catch {
+    return NextResponse.json({ error: "Notion request failed" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   if (!NOTION_API_KEY || !NOTION_DATABASE_ID) {
-    return NextResponse.json(
-      { error: "Notion not configured" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Notion not configured" }, { status: 400 });
   }
 
   try {
     const body = await req.json();
-    const { action, ...payload } = body;
+    const validation = validateRequest(notionRequestSchema, body);
 
-    if (action === "sync-project") {
+    if (!validation.success) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+
+    const data = validation.data;
+
+    if (data.action === "sync-project") {
       const res = await notionFetch("/pages", {
         method: "POST",
         body: JSON.stringify({
           parent: { database_id: NOTION_DATABASE_ID },
           properties: {
-            Name: { title: [{ text: { content: payload.name } }] },
+            Name: { title: [{ text: { content: data.name } }] },
             Description: {
-              rich_text: [{ text: { content: payload.description || "" } }],
+              rich_text: [{ text: { content: data.description } }],
             },
-            Status: { select: { name: payload.status || "active" } },
+            Status: { select: { name: data.status } },
           },
         }),
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        return NextResponse.json({ error: err }, { status: res.status });
+        return NextResponse.json(
+          { error: "Failed to sync project to Notion" },
+          { status: res.status }
+        );
       }
 
-      const data = await res.json();
-      return NextResponse.json({ pageId: data.id, url: data.url });
+      const result = await res.json();
+      return NextResponse.json({ pageId: result.id, url: result.url });
     }
 
-    if (action === "search") {
+    if (data.action === "search") {
       const res = await notionFetch("/search", {
         method: "POST",
-        body: JSON.stringify({ query: payload.query }),
+        body: JSON.stringify({ query: data.query }),
       });
 
-      const data = await res.json();
-      return NextResponse.json(data);
+      const result = await res.json();
+      return NextResponse.json(result);
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 }
-    );
+  } catch {
+    return NextResponse.json({ error: "Notion request failed" }, { status: 500 });
   }
 }

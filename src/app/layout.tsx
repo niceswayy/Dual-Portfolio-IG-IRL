@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import ToastContainer from "@/components/shared/Toast";
 
 export const metadata: Metadata = {
   title: "Braincells - Agent Orchestration Interface",
   description:
     "Real-time AI agent management with MCP, skill building, and project orchestration",
+  robots: "noindex, nofollow",
 };
 
 export default function RootLayout({
@@ -20,7 +22,10 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        {children}
+        <ToastContainer />
+      </body>
     </html>
   );
 }
